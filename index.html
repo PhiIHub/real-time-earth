@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>MODIS + VIIRS Fusion Viewer</title>
+  <meta charset="utf-8" />
+  <style>
+    html, body, #map { margin: 0; height: 100%; }
+  </style>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+  <div id="map"></div>
+
+  <script>
+    const today = new Date().toISOString().split('T')[0];
+
+    const modisURL = (z, x, y) =>
+      `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/${today}/GoogleMapsCompatible_Level9/${z}/${y}/${x}.jpg`;
+
+    const viirsURL = (z, x, y) =>
+      `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_SNPP_CorrectedReflectance_TrueColor/default/${today}/GoogleMapsCompatible_Level9/${z}/${y}/${x}.jpg`;
+
+    const map = L.map('map', {
+      minZoom: 2,
+      maxZoom: 9
+    }).setView([20, 0], 2);
+
+    const tileSize = 256;
+
+    const fusedLayer = L.GridLayer.extend({
+      createTile: function (coords, done) {
+        const tile = document.createElement('canvas');
+        tile.width = tileSize;
+        tile.height = tileSize;
+        const ctx = tile.getContext('2d');
+
+        // Pre-fill with neutral gray
+        ctx.fillStyle = '#777';
+        ctx.fillRect(0, 0, tileSize, tileSize);
+
+        const modisImg = new Image();
+        const viirsImg = new Image();
+        modisImg.crossOrigin = '';
+        viirsImg.crossOrigin = '';
+
+        let modisReady = false;
+        let viirsReady = false;
+        let modisError = false;
+        let viirsError = false;
+
+        const { x, y, z } = coords;
+
+        function drawIfReady() {
+          if (!(modisReady || modisError) || !(viirsReady || viirsError)) return;
+
+          if (viirsReady) {
+            const viirsCanvas = document.createElement('canvas');
+            viirsCanvas.width = tileSize;
+            viirsCanvas.height = tileSize;
+            const viirsCtx = viirsCanvas.getContext('2d');
+            viirsCtx.drawImage(viirsImg, 0, 0);
+            var viirsData = viirsCtx.getImageData(0, 0, tileSize, tileSize).data;
+          }
+
+          if (modisReady) {
+            const modisCanvas = document.createElement('canvas');
+            modisCanvas.width = tileSize;
+            modisCanvas.height = tileSize;
+            const modisCtx = modisCanvas.getContext('2d');
+            modisCtx.drawImage(modisImg, 0, 0);
+            var modisImage = modisCtx.getImageData(0, 0, tileSize, tileSize);
+            var modisData = modisImage.data;
+
+            for (let i = 0; i < modisData.length; i += 4) {
+              const r = modisData[i];
+              const g = modisData[i + 1];
+              const b = modisData[i + 2];
+              const brightness = (r + g + b) / 3;
+
+              if (brightness > 40 || !viirsReady) {
+                // Use MODIS pixel if not black or VIIRS unavailable
+                // leave as-is
+              } else {
+                // Use VIIRS pixel where MODIS is black
+                modisData[i]     = viirsData[i];
+                modisData[i + 1] = viirsData[i + 1];
+                modisData[i + 2] = viirsData[i + 2];
+                modisData[i + 3] = 255;
+              }
+            }
+
+            ctx.putImageData(modisImage, 0, 0);
+          } else if (viirsReady) {
+            ctx.drawImage(viirsImg, 0, 0);
+          }
+
+          done(null, tile);
+        }
+
+        modisImg.onload = function () {
+          modisReady = true;
+          drawIfReady();
+        };
+
+        viirsImg.onload = function () {
+          viirsReady = true;
+          drawIfReady();
+        };
+
+        modisImg.onerror = function () {
+          modisError = true;
+          drawIfReady();
+        };
+
+        viirsImg.onerror = function () {
+          viirsError = true;
+          drawIfReady();
+        };
+
+        modisImg.src = modisURL(z, x, y);
+        viirsImg.src = viirsURL(z, x, y);
+
+        return tile;
+      }
+    });
+
+    map.addLayer(new fusedLayer());
+  </script>
+</body>
+</html>
